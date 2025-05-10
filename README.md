@@ -1,6 +1,6 @@
-# RAW to HDRI Exposure Fusion
+# RAW to HDRI
 
-This project implements exposure fusion for CR3 RAW files, converting them to ACES color space and producing a scene-referred HDR EXR output. It follows Debevec's method for HDR reconstruction from multiple exposures.
+A Python tool for converting RAW image sequences to HDR images using exposure fusion. The tool automatically detects and groups images into exposure stacks based on capture time, making it easy to process multiple HDR sequences in a single run.
 
 ## License
 
@@ -67,7 +67,7 @@ pip install -r requirements.txt
 
 2. Run the script:
 ```bash
-python src/main.py
+python src/main.py -v
 ```
 
 3. The resulting HDR EXR file will be saved in the `output` directory as `fused.exr`
@@ -75,9 +75,7 @@ python src/main.py
 ### Command Line Options
 
 - `-v` or `--verbose`: Enable detailed logging output
-```bash
-python src/main.py -v
-```
+- `--time-delta`: Maximum time difference (in seconds) between images in the same stack (default: 1)
 
 ## Output
 
@@ -106,4 +104,28 @@ The script produces a scene-referred HDR EXR file that:
 
 3. If you get Python import errors:
    - Ensure you're in the virtual environment
-   - Run `pip install -r requirements.txt` again 
+   - Run `pip install -r requirements.txt` again
+
+## Technical Notes
+
+### Image Stacking
+The tool automatically groups images into exposure stacks based on their capture times. This is useful when you have multiple HDR sequences in your input directory. For example:
+- If you have 9 images taken in 3 different locations
+- And each location has 3 exposures
+- The tool will automatically create 3 separate HDR images, one for each location
+
+The stacking is controlled by the `--time-delta` parameter:
+- Images taken within this time window are considered part of the same stack
+- Default is 1 second, which works well for most HDR sequences
+- Adjust this value if your images are taken with longer intervals
+
+### HDR Fusion
+- Uses Debevec's exposure fusion method
+- Weights are calculated based on exposure values
+- Properly handles the full HDR range from the input images
+
+## Verification
+
+- Check the verbose output to see how images are grouped into stacks
+- Each stack's images should have similar capture times
+- The output EXR files should have a wide dynamic range 

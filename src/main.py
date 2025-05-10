@@ -4,6 +4,7 @@ import subprocess
 import numpy as np
 import Imath
 import OpenEXR
+from datetime import datetime, timedelta
 from exposure_fusion import ExposureFusion
 from logging_config import setup_loggers
 from image_data import ImageData
@@ -156,9 +157,47 @@ def read_exr(exr_file: str, verbose: bool = False) -> np.ndarray:
     
     return aces
 
+def group_images_by_time(image_data_list: list[ImageData], time_delta: timedelta = timedelta(seconds=1)) -> list[list[ImageData]]:
+    """
+    Group images into stacks based on capture time.
+    
+    Args:
+        image_data_list: List of ImageData objects
+        time_delta: Maximum time difference between images in the same stack
+        
+    Returns:
+        list[list[ImageData]]: List of image stacks
+    """
+    # Filter out images without capture time and sort by capture time
+    valid_images = [img for img in image_data_list if img.capture_time is not None]
+    if not valid_images:
+        return []
+    
+    # Sort by capture time (we know all images have capture_time now)
+    sorted_images = sorted(valid_images, key=lambda x: x.capture_time)  # type: ignore
+    
+    stacks = []
+    current_stack = [sorted_images[0]]
+    
+    for img in sorted_images[1:]:
+        if img.capture_time - current_stack[-1].capture_time <= time_delta:
+            current_stack.append(img)
+        else:
+            if len(current_stack) > 1:  # Only keep stacks with multiple images
+                stacks.append(current_stack)
+            current_stack = [img]
+    
+    if len(current_stack) > 1:  # Don't forget the last stack
+        stacks.append(current_stack)
+    
+    return stacks
+
 def main(verbose=False):
     if verbose:
         logger.info("Starting RAW to HDRI process...")
+    
+    # Create output directory for HDR images
+    os.makedirs("output", exist_ok=True)
     
     # Get all CR3 files
     input_files = sorted(glob.glob('input/*.CR3'))
@@ -194,7 +233,8 @@ def main(verbose=False):
                 image=aces,
                 raw_path=file_path,
                 shutter_speed=exp_info['shutter_speed'],
-                ev=exp_info['ev']
+                ev=exp_info['ev'],
+                capture_time=exp_info['capture_time']
             )
             image_data_list.append(image_data)
             
@@ -202,15 +242,41 @@ def main(verbose=False):
             logger.error(f"Error processing file {file_path}: {e}")
             raise
     
-    # Perform exposure fusion
-    logger.info("\nPerforming exposure fusion...")
-    fusion = ExposureFusion(verbose=verbose)
-    fused = fusion.fuse(image_data_list)
+    # Group images into stacks based on capture time
+    logger.info("\nGrouping images into exposure stacks...")
+    stacks = group_images_by_time(image_data_list)
     
-    # Save result
-    output_path = 'output/fused.exr'
-    logger.info(f"Saving result to {output_path}")
-    save_exr(fused, output_path)
+    if not stacks:
+        logger.error("No valid exposure stacks found!")
+        return
+    
+    if verbose:
+        logger.info(f"Found {len(stacks)} exposure stacks:")
+        for i, stack in enumerate(stacks):
+            logger.info(f"\nStack {i+1}:")
+            for img in stack:
+                logger.info(f"  {os.path.basename(img.raw_path)} (EV: {img.ev:.1f}, Time: {img.capture_time})")
+    
+    # Process each stack
+    logger.info("\nProcessing exposure stacks...")
+    fusion = ExposureFusion(verbose=verbose)
+    
+    for i, stack in enumerate(stacks):
+        if verbose:
+            logger.info(f"\nProcessing stack {i+1}/{len(stacks)}")
+        
+        # Get first and last image names for output filename
+        first_name = os.path.splitext(os.path.basename(stack[0].raw_path))[0]
+        last_name = os.path.splitext(os.path.basename(stack[-1].raw_path))[0]
+        output_name = f"{first_name}_to_{last_name}_fused.exr"
+        output_path = os.path.join("output", output_name)
+        
+        # Perform fusion
+        fused = fusion.fuse(stack)
+        
+        # Save result
+        logger.info(f"Saving HDR image to {output_path}")
+        save_exr(fused, output_path)
     
     logger.info("Done!")
 
@@ -218,6 +284,8 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Convert RAW files to HDR EXR using exposure fusion')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
+    parser.add_argument('--time-delta', type=int, default=1,
+                      help='Maximum time difference (in seconds) between images in the same stack')
     args = parser.parse_args()
     
     main(verbose=args.verbose)
