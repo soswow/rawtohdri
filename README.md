@@ -61,50 +61,46 @@ pip install -r requirements.txt
 
 ## Usage
 
-1. Place your CR3 files in the `input` directory
-   - Files should be from the same scene with different exposures
-   - Recommended: 5-7 exposures with 2 EV steps between them
-
+1. Place your RAW files in the input directory (default: `input/`)
 2. Run the script:
-```bash
-python src/main.py -v
-```
+   ```bash
+   python src/main.py -v
+   ```
 
-3. The resulting HDR EXR file will be saved in the `output` directory as `fused.exr`
+The script will:
+1. Read all RAW files from the input directory
+2. Extract capture times and exposure information
+3. Automatically group images into stacks based on capture time
+4. Process each stack separately to create HDR images
+5. Save the results in the output directory
 
 ### Command Line Options
 
-- `-v` or `--verbose`: Enable detailed logging output
+- `-v, --verbose`: Enable detailed logging
 - `--time-delta`: Maximum time difference (in seconds) between images in the same stack (default: 1)
+- `-i, --input-dir`: Input directory containing RAW files (default: input)
+- `-o, --output-dir`: Output directory for HDR images (default: output)
+- `--organize-only`: Only organize files into stack folders without processing them
 
-## Output
+### Examples
+```bash
+# Use default directories
+python src/main.py -v
 
-The script produces a scene-referred HDR EXR file that:
-- Is in ACES color space
-- Has a high dynamic range (typically 10-15 stops)
-- Is suitable for use in HDR workflows
-- Can be opened in software like Nuke, Houdini, or Blender
+# Specify custom directories
+python src/main.py -v -i /path/to/raws -o /path/to/output
 
-## Notes
+# Adjust time delta for stacking
+python src/main.py -v --time-delta 5
 
-- The script uses Debevec's method for HDR reconstruction
-- Weights are computed using a smooth weighting function
-- The middle exposure is used as a reference
-- All images are converted to ACES color space before fusion
+# Only organize files into stack folders without processing
+python src/main.py -v --organize-only
+```
 
-## Troubleshooting
-
-1. If you get "exiftool not found":
-   - Ensure exiftool is installed and in your system PATH
-   - Try running `exiftool -ver` to verify installation
-
-2. If you get "rawtoaces not found":
-   - Ensure rawtoaces is installed and in your system PATH
-   - Try running `rawtoaces -h` to verify installation
-
-3. If you get Python import errors:
-   - Ensure you're in the virtual environment
-   - Run `pip install -r requirements.txt` again
+### Output
+- Each HDR image is saved as an EXR file in the output directory
+- Files are named using the first and last image in each stack (e.g., `IMG_001_to_IMG_005_fused.exr`)
+- The EXR files are in ACES color space and contain the full HDR range
 
 ## Technical Notes
 
@@ -119,10 +115,30 @@ The stacking is controlled by the `--time-delta` parameter:
 - Default is 1 second, which works well for most HDR sequences
 - Adjust this value if your images are taken with longer intervals
 
+### Directory Organization
+- The tool will automatically organize loose images inside input folder into stack folders
+- Each stack folder is named using the first and last image in the stack
+- Only images in stack folders are processed
+- You can also manually organize images into folders before running the script
+
 ### HDR Fusion
 - Uses Debevec's exposure fusion method
 - Weights are calculated based on exposure values
 - Properly handles the full HDR range from the input images
+
+## Troubleshooting
+
+1. If you get "exiftool not found":
+   - Ensure exiftool is installed and in your system PATH
+   - Try running `exiftool -ver` to verify installation
+
+2. If you get "rawtoaces not found":
+   - Ensure rawtoaces is installed and in your system PATH
+   - Try running `rawtoaces -h` to verify installation
+
+3. If you get Python import errors:
+   - Ensure you're in the virtual environment
+   - Run `pip install -r requirements.txt` again
 
 ## Verification
 
