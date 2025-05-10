@@ -1,0 +1,35 @@
+import numpy as np
+import os
+from dataclasses import dataclass
+
+@dataclass
+class ImageData:
+    """
+    A class to store image data and exposure information.
+    
+    Attributes:
+        image: The image data as a numpy array
+        raw_path: Path to the original RAW file
+        shutter_speed: Shutter speed in seconds
+        ev: Exposure value
+    """
+    image: np.ndarray
+    raw_path: str
+    shutter_speed: float
+    ev: float
+    
+    def __str__(self) -> str:
+        """Return a string representation of the image data."""
+        return (f"ImageData(filename='{os.path.basename(self.raw_path)}', "
+                f"shape={self.image.shape}, "
+                f"shutter_speed={self.shutter_speed:.3f}s, "
+                f"ev={self.ev:.1f})")
+    
+    def __repr__(self) -> str:
+        """Return a detailed string representation of the image data."""
+        return (f"ImageData(\n"
+                f"    image=array(shape={self.image.shape}, dtype={self.image.dtype}),\n"
+                f"    raw_path='{self.raw_path}',\n"
+                f"    shutter_speed={self.shutter_speed:.3f},\n"
+                f"    ev={self.ev:.1f}\n"
+                f")") 
