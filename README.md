@@ -2,6 +2,10 @@
 
 This project implements exposure fusion for CR3 RAW files, converting them to ACES color space and producing a scene-referred HDR EXR output. It follows Debevec's method for HDR reconstruction from multiple exposures.
 
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
 ## Prerequisites
 
 ### System Dependencies
