@@ -39,6 +39,7 @@ rawtohdri/
 │   ├── exposure_fusion.py # HDR fusion implementation
 │   ├── raw_metadata.py   # RAW file metadata extraction
 │   ├── image_data.py     # Image data structure
+│   ├── exr_utils.py      # EXR file I/O utilities
 │   └── logging_config.py # Logging configuration
 ├── input/                # Place your CR3 files here
 ├── output/              # Generated EXR files will be saved here
@@ -77,6 +78,7 @@ The script will:
 ### Command Line Options
 
 - `-v, --verbose`: Enable detailed logging
+- `-d, --debug-intermediate-results`: Save intermediate results (weight maps and scaled images) as EXR files for debugging
 - `--time-delta`: Maximum time difference (in seconds) between images in the same stack (default: 1)
 - `-i, --input-dir`: Input directory containing RAW files (default: input)
 - `-o, --output-dir`: Output directory for HDR images (default: output)
@@ -86,6 +88,9 @@ The script will:
 ```bash
 # Use default directories
 python src/main.py -v
+
+# Save intermediate results for debugging
+python src/main.py -v -d
 
 # Specify custom directories
 python src/main.py -v -i /path/to/raws -o /path/to/output
@@ -101,6 +106,9 @@ python src/main.py -v --organize-only
 - Each HDR image is saved as an EXR file in the output directory
 - Files are named using the first and last image in each stack (e.g., `IMG_001_to_IMG_005_fused.exr`)
 - The EXR files are in ACES color space and contain the full HDR range
+- When using `--debug-intermediate-results`, additional EXR files are saved:
+  - `debug_weights_*.exr`: Weight maps for each input image
+  - `debug_scaled_image_*.exr`: Scaled input images before fusion
 
 ## Technical Notes
 
@@ -163,8 +171,14 @@ The EV offset is applied on top of the camera's exposure value, allowing you to:
    - Ensure you're in the virtual environment
    - Run `pip install -r requirements.txt` again
 
+4. If you're having issues with the fusion:
+   - Use `--debug-intermediate-results` to save intermediate files
+   - Check the weight maps to verify exposure weighting
+   - Inspect the scaled images to ensure proper exposure compensation
+
 ## Verification
 
 - Check the verbose output to see how images are grouped into stacks
 - Each stack's images should have similar capture times
-- The output EXR files should have a wide dynamic range 
+- The output EXR files should have a wide dynamic range
+- When using `--debug-intermediate-results`, inspect the intermediate files to verify the fusion process 
