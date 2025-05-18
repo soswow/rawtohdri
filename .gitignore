@@ -45,7 +45,7 @@ env/
 *.swp
 *.swo
 .DS_Store
-
+pyrightconfig.json
 
 # Logs
 *.log 
