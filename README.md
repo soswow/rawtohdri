@@ -121,6 +121,29 @@ The stacking is controlled by the `--time-delta` parameter:
 - Only images in stack folders are processed
 - You can also manually organize images into folders before running the script
 
+#### EV Offset Subfolders
+You can create subfolders with EV offsets inside stack folders to include images with different exposure ranges in the same stack. This is useful when:
+- Using ND filters that reduce the light by a known amount
+- Wanting to manually adjust the exposure value of some images in a stack
+- Combining images with different exposure ranges into a single stack
+
+Example folder structure:
+```
+input/
+└── IMG_001-IMG_005/           # Main stack folder
+    ├── IMG_001.CR3            # Normal exposure
+    ├── IMG_002.CR3            # Normal exposure
+    ├── IMG_003.CR3            # Normal exposure
+    └── 10EV/                  # EV offset subfolder
+        ├── IMG_004.CR3        # +10 EV offset
+        └── IMG_005.CR3        # +10 EV offset
+```
+
+The EV offset is applied on top of the camera's exposure value, allowing you to:
+1. Correct for ND filter usage
+2. Manually adjust exposure values for better HDR fusion
+3. Combine images with different exposure ranges into a single stack
+
 ### HDR Fusion
 - Uses Debevec's exposure fusion method
 - Weights are calculated based on exposure values

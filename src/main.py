@@ -4,11 +4,13 @@ import subprocess
 import numpy as np
 import Imath
 import OpenEXR
+import re
 from datetime import datetime, timedelta
 from exposure_fusion import ExposureFusion
 from logging_config import setup_loggers
 from image_data import ImageData
 from raw_metadata import get_exposure_info
+from exr_utils import save_exr
 import shutil
 
 # Set up loggers
@@ -16,30 +18,6 @@ loggers = setup_loggers()
 logger = loggers['main']
 exr_logger = loggers['exr']
 raw_logger = loggers['raw']
-
-def save_exr(img, output_path):
-    """Save the image as an EXR file."""
-    # Convert to float32
-    img = img.astype(np.float32)
-    
-    # Get image dimensions
-    height, width = img.shape[:2]
-    
-    # Prepare header
-    header = OpenEXR.Header(width, height)
-    header['compression'] = Imath.Compression(Imath.Compression.PIZ_COMPRESSION)
-    header['channels'] = dict([(c, Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))) 
-                             for c in ['R', 'G', 'B']])
-    
-    # Create file
-    out = OpenEXR.OutputFile(output_path, header)
-    
-    # Write pixel data
-    R = img[:,:,0].tobytes()
-    G = img[:,:,1].tobytes()
-    B = img[:,:,2].tobytes()
-    out.writePixels({'R': R, 'G': G, 'B': B})
-    out.close()
 
 def process_raw_to_aces(input_file, verbose=False) -> str:
     """
@@ -63,7 +41,7 @@ def process_raw_to_aces(input_file, verbose=False) -> str:
         '--wb-method', '0',  # Use as-shot white balance
         '--mat-method', '0',  # Use camera metadata
         '-W',  # Write output file
-        '--headroom', '6',  # Set headroom to 6 stops
+        '--headroom', '2',  # Set headroom to 2
         '-v',  # Verbose output
         input_file
     ]
@@ -193,10 +171,32 @@ def group_images_by_time(image_data_list: list[ImageData], time_delta: timedelta
     
     return stacks
 
+def is_ev_offset_folder(folder_name: str) -> bool:
+    """Check if a folder name matches the <int>EV pattern."""
+    return bool(re.match(r'^([+-]?\d+)EV$', folder_name))
+
+def get_ev_offset(folder_name: str) -> float:
+    """Get EV offset from folder name if it matches <int>EV pattern."""
+    match = re.match(r'^([+-]?\d+)EV$', folder_name)
+    if match:
+        return float(match.group(1))
+    return 0.0
+
 def find_stack_folders(input_dir: str) -> list[str]:
     """Return a list of subfolders in input_dir, each representing a stack."""
     return [os.path.join(input_dir, d) for d in os.listdir(input_dir)
             if os.path.isdir(os.path.join(input_dir, d))]
+
+def find_ev_offset_folders(stack_folder: str) -> list[str]:
+    """
+    Find all EV offset folders inside a stack folder.
+    Returns a list of EV offset folder paths.
+    """
+    ev_folders = []
+    for d in os.listdir(stack_folder):
+        if is_ev_offset_folder(d):
+            ev_folders.append(os.path.join(stack_folder, d))
+    return ev_folders
 
 def find_loose_images(input_dir: str) -> list[str]:
     """Return a list of image files in input_dir that are not in any subfolder."""
@@ -219,7 +219,9 @@ def move_images_to_stack_folders(input_dir: str, time_delta: int, verbose: bool 
         image_data_list.append(ImageData(
             image=None,  # Not needed for stacking
             raw_path=file_path,
+            filename=os.path.basename(file_path),
             shutter_speed=exp_info['shutter_speed'],
+            shutter_speed_str=exp_info['shutter_speed_str'],
             ev=exp_info['ev'],
             capture_time=exp_info['capture_time']
         ))
@@ -263,18 +265,29 @@ def main(verbose=False, time_delta=1, input_dir='input', output_dir='output', or
         logger.info(f"Found {len(stack_folders)} stack folders:")
         for folder in stack_folders:
             logger.info(f"  {os.path.basename(folder)}")
+            ev_folders = find_ev_offset_folders(folder)
+            for ev_folder in ev_folders:
+                ev_offset = get_ev_offset(os.path.basename(ev_folder))
+                logger.info(f"    EV offset folder: {os.path.basename(ev_folder)} ({ev_offset:+.1f} EV)")
     
     # Step 3: Process each stack folder
     logger.info("\nProcessing exposure stacks...")
-    fusion = ExposureFusion(verbose=verbose)
+    fusion = ExposureFusion(verbose=verbose, debug_intermediate_results=args.debug_intermediate_results)
     os.makedirs(output_dir, exist_ok=True)
     
     for folder in stack_folders:
-        # Get all CR3 files in the folder
+        # Get all CR3 files in the main folder
         input_files = sorted(glob.glob(os.path.join(folder, '*.CR3')))
         if not input_files:
             logger.warning(f"No CR3 files found in {folder}, skipping.")
             continue
+            
+        # Get CR3 files from EV offset folders if they exist
+        ev_folders = find_ev_offset_folders(folder)
+        for ev_folder in ev_folders:
+            ev_files = sorted(glob.glob(os.path.join(ev_folder, '*.CR3')))
+            input_files.extend(ev_files)
+        
         image_data_list: list[ImageData] = []
         for i, file_path in enumerate(input_files):
             if verbose:
@@ -283,17 +296,31 @@ def main(verbose=False, time_delta=1, input_dir='input', output_dir='output', or
             try:
                 aces = read_exr(aces_file, verbose)
                 exp_info = get_exposure_info(file_path, verbose)
+                
+                # Get EV offset from folder name if in EV folder
+                folder_path = os.path.dirname(file_path)
+                ev_offset = 0.0
+                if any(part.endswith('EV') for part in folder_path.split(os.sep)):
+                    ev_offset = get_ev_offset(os.path.basename(folder_path))
+                
                 image_data = ImageData(
                     image=aces,
                     raw_path=file_path,
+                    filename=os.path.basename(file_path),
                     shutter_speed=exp_info['shutter_speed'],
-                    ev=exp_info['ev'],
-                    capture_time=exp_info['capture_time']
+                    shutter_speed_str=exp_info['shutter_speed_str'],
+                    ev=exp_info['ev'] + ev_offset,
+                    ev_offset=ev_offset,
+                    ev_original=exp_info['ev'],
+                    capture_time=exp_info['capture_time'],
+                    aperture=exp_info['aperture'],
+                    iso=exp_info['iso']
                 )
                 image_data_list.append(image_data)
             except Exception as e:
                 logger.error(f"Error processing file {file_path}: {e}")
                 raise
+                
         # Output name based on folder
         output_name = f"{os.path.basename(folder)}_fused.exr"
         output_path = os.path.join(output_dir, output_name)
@@ -306,6 +333,8 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Convert RAW files to HDR EXR using exposure fusion')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
+    parser.add_argument('--debug-intermediate-results', '-d', action='store_true', 
+                       help='Save intermediate results as EXR files for debugging')
     parser.add_argument('--time-delta', type=int, default=1,
                       help='Maximum time difference (in seconds) between images in the same stack')
     parser.add_argument('--input-dir', '-i', default='input',

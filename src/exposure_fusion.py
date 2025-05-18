@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 from logging_config import setup_loggers
 from image_data import ImageData
+from exr_utils import save_exr
 
 # Set up loggers
 loggers = setup_loggers()
@@ -9,83 +10,61 @@ fusion_logger = loggers['fusion']
 weight_logger = loggers['weight']
 
 class ExposureFusion:
-    def __init__(self, verbose=False):
+    def __init__(self, verbose=False, debug_intermediate_results=False):
         """
         Initialize the exposure fusion processor.
         
         Args:
             verbose: Whether to enable detailed logging
+            debug_intermediate_results: Whether to save intermediate results as EXR files
         """
         self.verbose = verbose
+        self.debug_intermediate_results = debug_intermediate_results
         
         if verbose:
             fusion_logger.info("Initialized ExposureFusion")
+
+        if debug_intermediate_results:
+            fusion_logger.info("Debug intermediate results enabled")
     
-    def compute_exposure(self, img: np.ndarray, ev: float) -> np.ndarray:
+    def compute_weight_map(self, img: np.ndarray[tuple[int, int, int], np.dtype[np.float32]], ev: float, filename: str) -> np.ndarray[tuple[int, int, int], np.dtype[np.float32]]:
         """
         Compute exposure weight map using Debevec's smooth weighting function.
+        Weights are calculated and kept separate for each RGB channel.
         
         Args:
-            img: Input image
+            img: Input image of shape (height, width, 3) with RGB channels
             ev: Exposure value
+            filename: Base filename for logging
             
         Returns:
-            np.ndarray: Exposure weight map
-        """
-        # Convert to float32 if needed
-        if img.dtype == np.float16:
-            img = img.astype(np.float32)
-        # Convert to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            np.ndarray: Exposure weight map of shape (height, width, 3) with per-channel weights in [0,1]
+        """ 
+        # Smooth weighting function centered at 0.18
+
+        target = 0.18  # Middle gray in linear space
+        sigma_dark = 0.02    # Controls the spread of the function
+        sigma_bright = 0.1  
+        linear_end = 0.07     # End point of linear ramp
+
+        # Calculate the Lorentzian value at linear_end to connect the linear ramp
+        lorentzian_at_end = 1 / (1 + ((linear_end - target) / sigma_dark)**2)
         
-        if self.verbose:
-            fusion_logger.info(f"  Input image range: [{gray.min():.3f}, {gray.max():.3f}]")
-            fusion_logger.info(f"  EV difference from middle: {ev:.1f}")
-        
-        # Debevec's smooth weighting function
-        # w(z) = z - Zmin for z <= (Zmin + Zmax)/2
-        # w(z) = Zmax - z for z > (Zmin + Zmax)/2
-        z_min = 0.0
-        z_max = 1.0
-        z_mid = (z_min + z_max) / 2.0
-        
-        # Normalize input to [0,1] range
-        gray_norm = (gray - gray.min()) / (gray.max() - gray.min())
-        
-        # Apply Debevec's weighting function
+        # Linear ramp from 0 to linear_end, then Lorentzian
         weights = np.where(
-            gray_norm <= z_mid,
-            gray_norm - z_min,  # For darker pixels
-            z_max - gray_norm   # For brighter pixels
+            img <= linear_end,
+            img * (lorentzian_at_end / linear_end),  # Linear ramp scaled to connect with Lorentzian
+            np.where(
+                img <= target,
+                1 / (1 + ((img - target) / sigma_dark)**2),    # Darker side
+                1 / (1 + ((img - target) / sigma_bright)**2)   # Brighter side
+            )
         )
         
         if self.verbose:
-            fusion_logger.info(f"  Base weights range: [{weights.min():.3f}, {weights.max():.3f}]")
+            fusion_logger.info(f"  Weights range:          [{weights.min():.3f}, {weights.max():.3f}]")
         
         return weights
-    
-    def normalize_weights(self, weights: list[np.ndarray]) -> np.ndarray:
-        """Normalize weight maps to sum to 1 at each pixel."""
-        stacked: np.ndarray = np.stack(weights, axis=0)
-        
-        if self.verbose:
-            fusion_logger.info("Weight normalization:")
-            fusion_logger.info(f"  Stacked shape: {stacked.shape}")
-            fusion_logger.info(f"  Stacked range: [{stacked.min():.3f}, {stacked.max():.3f}]")
-        
-        # Add small epsilon to avoid division by zero
-        sum_weights = np.sum(stacked, axis=0) + 1e-10
-        
-        if self.verbose:
-            fusion_logger.info(f"  Sum weights range: [{sum_weights.min():.3f}, {sum_weights.max():.3f}]")
-        
-        normalized: np.ndarray = stacked / sum_weights
-        
-        if self.verbose:
-            fusion_logger.info(f"  Normalized range: [{normalized.min():.3f}, {normalized.max():.3f}]")
-            fusion_logger.info(f"  Normalized mean: {normalized.mean():.3f}")
-        
-        return normalized
     
     def fuse(self, image_data_list: list[ImageData]) -> np.ndarray:
         """
@@ -103,50 +82,64 @@ class ExposureFusion:
         if self.verbose:
             fusion_logger.info(f"Starting fusion of {len(image_data_list)} images")
         
-        # Sort images by EV to find middle exposure
-        sorted_data = sorted(image_data_list, key=lambda x: x.ev)
-        middle_idx = len(sorted_data) // 2
-        middle_ev = sorted_data[middle_idx].ev
+        # Sort all images by total EV (base + offset)
+        sorted_data: list[ImageData] = sorted(image_data_list, key=lambda x: x.ev)
         
-        if self.verbose:
-            fusion_logger.info(f"Using middle exposure as reference (EV: {middle_ev:.1f})")
-            for i, data in enumerate(sorted_data):
-                fusion_logger.info(f"  Image {i+1}: EV = {data.ev:.1f}")
-        
-        # Extract images and exposure info
-        images = [data.image for data in sorted_data]
-        evs = [data.ev for data in sorted_data]
-        
-        # Convert EV differences to exposure time ratios
-        # For EV differences, each stop is a factor of 2
-        # So if image A is 2 stops brighter than image B, its exposure time is 1/4 of B's
-        exposure_ratios = np.array([2.0 ** (middle_ev - ev) for ev in evs])
-        
-        if self.verbose:
-            fusion_logger.info("Exposure ratios relative to middle:")
-            for i, r in enumerate(exposure_ratios):
-                fusion_logger.info(f"  Image {i+1}: {r:.6f}")
-        
-        # Compute exposure weights
-        weights = [self.compute_exposure(img, ev - middle_ev) for img, ev in zip(images, evs)]
-        
-        if self.verbose:
-            fusion_logger.info("Computed exposure weights:")
-            for i, w in enumerate(weights):
-                fusion_logger.info(f"  Image {i+1} weights: [{w.min():.3f}, {w.max():.3f}]")
-        
-        # Normalize weights
-        weights = self.normalize_weights(weights)
+        # Get reference EV value
+        evs = [data.ev for data in sorted_data if data.ev_offset == 0.0]
+        ref_ev_idx = len(evs) // 2
+        ref_ev = evs[ref_ev_idx]
         
         # Perform fusion according to Debevec's formula:
         # E = Σ(w(Z_ij) * Z_ij / Δt_j) / Σ(w(Z_ij))
-        fused = np.zeros_like(images[0])
-        for i, (img, weight, ratio) in enumerate(zip(images, weights, exposure_ratios)):
-            # Scale by inverse of exposure ratio (divide by exposure time)
-            contribution = (img / ratio) * weight[..., np.newaxis]
+        fused = np.zeros_like(sorted_data[0].image, dtype=np.float32)
+        weight_sum = np.zeros_like(sorted_data[0].image, dtype=np.float32)
+        
+        for i, data in enumerate(sorted_data):
+            filename = data.filename
+            ev = data.ev
+
+            if data.image is None:
+                fusion_logger.info(f"Skipping {filename} because image data is missing")
+                continue
+            
             if self.verbose:
-                fusion_logger.info(f"  Image {i+1} contribution range: [{contribution.min():.3f}, {contribution.max():.3f}]")
+                fusion_logger.info(f"\nImage {filename}:")
+
+                is_reference_ev_str = i == ref_ev and '(reference)' or ''
+                has_offset_ev_str = data.ev_offset != 0.0 and f'(offset: {data.ev_offset:+.1f}, original: {data.ev_original:.1f})' or ''
+                fusion_logger.info(f"  EV =                 {ev:.1f} {is_reference_ev_str} {has_offset_ev_str} ({data.shutter_speed:.3f}s)")
+                fusion_logger.info(f"  Input image range:   [{data.image.min():.3f}, {data.image.max():.3f}]")
+                          
+            image = np.clip(data.image, 0, None).astype(np.float32)
+            
+            exposure_scale = 2.0 ** (ref_ev - ev)
+            scaled_image = image / exposure_scale
+            
+            weight = self.compute_weight_map(image, ev, filename)
+            contribution = weight * scaled_image
+            
             fused += contribution
+            weight_sum += weight
+            
+            if self.verbose:
+                fusion_logger.info(f"  exposure scale:      {exposure_scale:.3f}")
+                fusion_logger.info(f"  contribution range:  [{contribution.min():.3f}, {contribution.max():.3f}]")
+
+            if self.debug_intermediate_results:
+                filename_base = filename.split(".")[0]
+                # Save weight map and scaled image as debug images
+                weights_debug_filename = f"debug_weights_{filename_base}.exr"
+                scaled_image_debug_filename = f"debug_scaled_image_{filename_base}.exr"
+
+                save_exr(weight, weights_debug_filename)
+                fusion_logger.info(f"  Saved debug weight map to {weights_debug_filename}")
+                
+                save_exr(scaled_image, scaled_image_debug_filename)
+                fusion_logger.info(f"  Saved debug scaled image to {scaled_image_debug_filename}")
+            
+        # Normalize by sum of weights
+        fused = fused / (weight_sum + 1e-10)  # Add small epsilon to avoid division by zero
         
         if self.verbose:
             fusion_logger.info("Fusion complete")
