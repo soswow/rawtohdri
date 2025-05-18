@@ -12,6 +12,7 @@ from image_data import ImageData
 from raw_metadata import get_exposure_info
 from exr_utils import save_exr
 import shutil
+import sys
 
 # Set up loggers
 loggers = setup_loggers()
@@ -242,11 +243,13 @@ def move_images_to_stack_folders(input_dir: str, time_delta: int, verbose: bool 
                 logger.info(f"Moving {img.raw_path} -> {dest}")
             shutil.move(img.raw_path, dest)
 
-def main(verbose=False, time_delta=1, input_dir='input', output_dir='output', organize_only=False):
+def main(verbose=False, time_delta=1, input_dir='input', output_dir='output', organize_only=False, debug_pixel=None):
     if verbose:
         logger.info("Starting RAW to HDRI process...")
         logger.info(f"Input directory: {input_dir}")
         logger.info(f"Output directory: {output_dir}")
+        if debug_pixel:
+            logger.info(f"Debug pixel: {debug_pixel}")
     
     # Step 1: Move loose images into stack folders if needed
     move_images_to_stack_folders(input_dir, time_delta, verbose)
@@ -272,7 +275,7 @@ def main(verbose=False, time_delta=1, input_dir='input', output_dir='output', or
     
     # Step 3: Process each stack folder
     logger.info("\nProcessing exposure stacks...")
-    fusion = ExposureFusion(verbose=verbose, debug_intermediate_results=args.debug_intermediate_results)
+    fusion = ExposureFusion(verbose=verbose, debug_intermediate_results=args.debug_intermediate_results, debug_pixel=debug_pixel)
     os.makedirs(output_dir, exist_ok=True)
     
     for folder in stack_folders:
@@ -281,7 +284,7 @@ def main(verbose=False, time_delta=1, input_dir='input', output_dir='output', or
         if not input_files:
             logger.warning(f"No CR3 files found in {folder}, skipping.")
             continue
-            
+        
         # Get CR3 files from EV offset folders if they exist
         ev_folders = find_ev_offset_folders(folder)
         for ev_folder in ev_folders:
@@ -343,7 +346,19 @@ if __name__ == '__main__':
                       help='Output directory for HDR images (default: output)')
     parser.add_argument('--organize-only', action='store_true',
                       help='Only organize files into stack folders without processing them')
+    parser.add_argument('--debug-pixel', type=str, help='Pixel coordinates to debug in format "x,y" (e.g., "100,200")')
     args = parser.parse_args()
+    
+    # Parse debug pixel coordinates if provided
+    debug_pixel = None
+    if args.debug_pixel:
+        try:
+            x, y = map(int, args.debug_pixel.split(','))
+            debug_pixel = (x, y)
+        except ValueError:
+            logger.error("Debug pixel must be in format 'x,y' (e.g., '100,200')")
+            sys.exit(1)
+    
     main(verbose=args.verbose, time_delta=args.time_delta, 
          input_dir=args.input_dir, output_dir=args.output_dir,
-         organize_only=args.organize_only)
+         organize_only=args.organize_only, debug_pixel=debug_pixel)
